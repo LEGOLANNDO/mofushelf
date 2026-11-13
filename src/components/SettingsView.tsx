@@ -51,7 +51,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [schemaOpen, setSchemaOpen] = useState(false);
   const [iosGuideOpen, setIosGuideOpen] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
-  const CLOUD_SHARE_URL = 'https://h-shuto.github.io/mofushelf/';
+  const CLOUD_SHARE_URL = 'https://legolanndo.github.io/mofushelf/';
   const LAN_SHARE_URL = 'http://192.168.1.100:5173';
   const [shareUrl, setShareUrl] = useState(() => {
     if (typeof window === 'undefined') return CLOUD_SHARE_URL;
