@@ -1,0 +1,67 @@
+name: Daily New Manga Release Check
+
+on:
+  schedule:
+    # 毎日 日本時間 08:00 (UTC 23:00) に実行
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-new-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check reading series via Rakuten Books API & notify Discord
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          node -e '
+            async function main() {
+              const { RAKUTEN_APP_ID, DISCORD_WEBHOOK_URL, SUPABASE_URL, SUPABASE_ANON_KEY } = process.env;
+              if (!RAKUTEN_APP_ID || !DISCORD_WEBHOOK_URL) {
+                console.log("RAKUTEN_APP_ID or DISCORD_WEBHOOK_URL not configured. Skipping.");
+                return;
+              }
+              let seriesList = [];
+              if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+                const res = await fetch(`${SUPABASE_URL}/rest/v1/series?status=eq.reading&notify_new_release=eq.true`, {
+                  headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+                });
+                if (res.ok) seriesList = await res.json();
+              }
+              const today = new Date().toISOString().slice(0, 10);
+              const embeds = [];
+              for (const s of seriesList) {
+                const url = `https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?applicationId=${encodeURIComponent(RAKUTEN_APP_ID)}&title=${encodeURIComponent(s.title)}&booksGenreId=001001&sort=-releaseDate&hits=5&format=json`;
+                const r = await fetch(url);
+                if (!r.ok) continue;
+                const data = await r.json();
+                for (const entry of data.Items || []) {
+                  const item = entry.Item;
+                  if (!item) continue;
+                  embeds.push({
+                    title: `📚 ${item.title}`,
+                    description: `発売日: ${item.salesDate}\n著者: ${item.author}`,
+                    url: item.itemUrl,
+                    color: 0xff8fa3,
+                    thumbnail: item.largeImageUrl ? { url: item.largeImageUrl } : undefined
+                  });
+                  break;
+                }
+              }
+              if (embeds.length > 0) {
+                await fetch(DISCORD_WEBHOOK_URL, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    username: "MofuShelf 新刊定期チェック",
+                    content: `✨ 本日(${today})の新刊チェック結果です！`,
+                    embeds: embeds.slice(0, 10)
+                  })
+                });
+              }
+            }
+            main();
+          '
