@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   BookHeart,
@@ -32,15 +32,20 @@ import {
   ViewportPreview,
 } from './types/manga';
 import { generatePastelCover } from './utils/coverGenerator';
-import { getSeriesSummary } from './utils/mangaHelpers';
+import { getSeriesSummary, getTodayIso } from './utils/mangaHelpers';
 import {
   FetchedCatalogSeries,
   OPENBD_REAL_SERIES_PRESETS,
   OpenBdVolumeMeta,
   normalizeSeriesTitle,
   parseMangaTitleAndVolume,
+  searchSeriesByKeyword,
   stripParallelTitle,
 } from './services/bookApi';
+import {
+  getPhoneNotificationStatus,
+  sendLocalPushNotification,
+} from './services/notificationService';
 import {
   loadShelfFromIndexedDb,
   saveShelfToIndexedDb,
@@ -51,12 +56,14 @@ const STORAGE_KEYS = {
   BOOKS: 'mofushelf_books_v2',
   SETTINGS: 'mofushelf_settings_v1',
   CLEAN_INIT_V2: 'mofushelf_clean_init_v2',
+  LAST_PUSH_DATE: 'mofushelf_last_push_date_v1',
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
   geminiApiKey: '',
   rakutenAppId: '',
   discordWebhookUrl: '',
+  browserPushEnabled: true,
   supabaseUrl: '',
   supabaseAnonKey: '',
   passcodeEnabled: false,
@@ -405,6 +412,98 @@ export function App() {
       return added.length > 0 ? [...prev, ...added] : prev;
     });
   };
+
+  const dailyPushCheckedRef = useRef(false);
+
+  // 起動・復帰時：1日1回だけ購読中＆通知ON作品の新刊をチェックし、許可済みならスマホへ直接通知
+  useEffect(() => {
+    if (dailyPushCheckedRef.current) return;
+    if (seriesList.length === 0) return;
+
+    const readingNotifySeries = seriesList.filter(
+      (s) => s.status === 'reading' && s.notify_new_release
+    );
+    if (readingNotifySeries.length === 0) return;
+
+    const todayIso = getTodayIso();
+    try {
+      if (localStorage.getItem(STORAGE_KEYS.LAST_PUSH_DATE) === todayIso) {
+        dailyPushCheckedRef.current = true;
+        return;
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    dailyPushCheckedRef.current = true;
+
+    const runDailyCheckAndNotify = async () => {
+      const in3DaysDate = new Date();
+      in3DaysDate.setDate(in3DaysDate.getDate() + 3);
+      const in3DaysIso = in3DaysDate.toISOString().slice(0, 10);
+
+      const readingSeriesIds = new Set(readingNotifySeries.map((s) => s.id));
+      const soonUpcoming = books.filter(
+        (b) =>
+          readingSeriesIds.has(b.series_id) &&
+          !b.is_owned &&
+          b.sales_date >= todayIso &&
+          b.sales_date <= in3DaysIso
+      );
+
+      const discovered: string[] = [];
+      for (const s of readingNotifySeries.slice(0, 3)) {
+        try {
+          const res = await searchSeriesByKeyword(s.title, settings.rakutenAppId);
+          const normTarget = normalizeSeriesTitle(s.title);
+          const exact = res.find((r) => normalizeSeriesTitle(r.title) === normTarget);
+          if (exact && exact.total_published > s.total_published) {
+            handleApplyDiscoveredVolumes(s.id, exact.total_published, exact.volumes);
+            discovered.push(`${s.title} ${exact.total_published}巻`);
+          }
+        } catch {
+          // 通信失敗時はオフラインのまま継続
+        }
+      }
+
+      if (discovered.length > 0) {
+        showToast(`新刊が見つかりました: ${discovered.join('・')}`);
+      }
+
+      if (discovered.length > 0 || soonUpcoming.length > 0) {
+        try {
+          localStorage.setItem(STORAGE_KEYS.LAST_PUSH_DATE, todayIso);
+        } catch {
+          // ignore storage errors
+        }
+
+        if (
+          settings.browserPushEnabled !== false &&
+          getPhoneNotificationStatus() === 'granted'
+        ) {
+          const parts: string[] = [];
+          if (discovered.length > 0) {
+            parts.push(`新刊追加: ${discovered.join('、')}`);
+          }
+          if (soonUpcoming.length > 0) {
+            parts.push(
+              `まもなく発売: ${soonUpcoming
+                .slice(0, 2)
+                .map((b) => b.title)
+                .join('、')}`
+            );
+          }
+          await sendLocalPushNotification({
+            title: '📚 MofuShelf 新刊お知らせ',
+            body: parts.join(' ／ '),
+          });
+        }
+      }
+    };
+
+    void runDailyCheckAndNotify();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seriesList.length]);
 
   const handleUpdateBookMeta = (bookId: string, tags: BookTag[], memo: string) => {
     setBooks((prev) =>
@@ -1004,6 +1103,7 @@ export function App() {
               books={books}
               rakutenAppId={settings.rakutenAppId}
               discordWebhookUrl={settings.discordWebhookUrl}
+              browserPushEnabled={settings.browserPushEnabled !== false}
               onMarkBookPurchased={handleToggleBookOwned}
               onApplyDiscoveredVolumes={handleApplyDiscoveredVolumes}
               onShowToast={showToast}

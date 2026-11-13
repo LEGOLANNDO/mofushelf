@@ -1,13 +1,16 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
+  BellRing,
   CalendarHeart,
+  CalendarPlus,
   Check,
   ExternalLink,
   Loader2,
   RefreshCw,
   ShoppingBag,
+  Smartphone,
   Sparkles,
 } from 'lucide-react';
 import {
@@ -16,6 +19,11 @@ import {
   searchSeriesByKeyword,
 } from '../services/bookApi';
 import {
+  PhoneNotificationStatus,
+  downloadReleaseCalendarIcs,
+  getPhoneNotificationStatus,
+  isIosBrowserWithoutHomeScreen,
+  requestPhoneNotificationPermission,
   sendDiscordNewReleaseWebhook,
   sendLocalPushNotification,
 } from '../services/notificationService';
@@ -32,6 +40,7 @@ interface ShoppingAndNewViewProps {
   books: Book[];
   rakutenAppId: string;
   discordWebhookUrl: string;
+  browserPushEnabled?: boolean;
   onMarkBookPurchased: (bookId: string) => void;
   onApplyDiscoveredVolumes: (
     seriesId: string,
@@ -46,6 +55,7 @@ export const ShoppingAndNewView: React.FC<ShoppingAndNewViewProps> = ({
   books,
   rakutenAppId,
   discordWebhookUrl,
+  browserPushEnabled = true,
   onMarkBookPurchased,
   onApplyDiscoveredVolumes,
   onShowToast,
@@ -53,7 +63,15 @@ export const ShoppingAndNewView: React.FC<ShoppingAndNewViewProps> = ({
   const [subTab, setSubTab] = useState<'upcoming' | 'shopping'>('upcoming');
   const [isCheckingApi, setIsCheckingApi] = useState(false);
   const [apiCheckLog, setApiCheckLog] = useState<string | null>(null);
+  const [phoneNotifStatus, setPhoneNotifStatus] = useState<PhoneNotificationStatus>(() =>
+    getPhoneNotificationStatus()
+  );
+  const needsIosHomeScreen = useMemo(() => isIosBrowserWithoutHomeScreen(), []);
   const today = getTodayIso();
+
+  useEffect(() => {
+    setPhoneNotifStatus(getPhoneNotificationStatus());
+  }, []);
 
   const seriesMap = useMemo(() => {
     const map = new Map<string, Series>();
@@ -138,10 +156,7 @@ export const ShoppingAndNewView: React.FC<ShoppingAndNewViewProps> = ({
         const msg = `${updatedCount}作品の新刊・未登録既刊を反映しました: ${updatedTitles.join('、')}`;
         setApiCheckLog(msg);
         onShowToast(`${updatedCount}作品の新刊を追加しました！`);
-        if (
-          typeof Notification !== 'undefined' &&
-          Notification.permission === 'granted'
-        ) {
+        if (browserPushEnabled && getPhoneNotificationStatus() === 'granted') {
           await sendLocalPushNotification({
             title: 'MofuShelf 新刊チェック',
             body: msg,
@@ -152,12 +167,44 @@ export const ShoppingAndNewView: React.FC<ShoppingAndNewViewProps> = ({
           `照会完了（対象 ${readingSeries.length}作品）：すべて最新の既刊数です。`
         );
         onShowToast('新刊チェック完了：最新の状態です');
+        if (
+          upcomingReleases.length > 0 &&
+          browserPushEnabled &&
+          getPhoneNotificationStatus() === 'granted'
+        ) {
+          await sendLocalPushNotification({
+            title: '📚 もうすぐ発売の新刊があります',
+            body: `${upcomingReleases
+              .slice(0, 2)
+              .map((b) => `${b.title} (${formatCountdownLabel(b.sales_date)})`)
+              .join('、')}`,
+          });
+        }
       }
     } catch {
       setApiCheckLog('新刊情報の照会中に通信エラーが発生しました。');
     } finally {
       setIsCheckingApi(false);
     }
+  };
+
+  const handleEnableOrTestPhoneNotification = async () => {
+    if (phoneNotifStatus === 'granted') {
+      const res = await sendLocalPushNotification({
+        title: '📚 MofuShelf スマホ通知テスト',
+        body:
+          upcomingReleases.length > 0
+            ? `もうすぐ発売: ${upcomingReleases[0].title}（${upcomingReleases[0].sales_date}）`
+            : 'サイトからスマホへの直接通知は正常に動作しています！',
+      });
+      setPhoneNotifStatus(getPhoneNotificationStatus());
+      onShowToast(res.message);
+      return;
+    }
+
+    const res = await requestPhoneNotificationPermission();
+    setPhoneNotifStatus(res.status);
+    onShowToast(res.message);
   };
 
   const renderStoreLinks = (bookTitle: string) => {
@@ -218,6 +265,76 @@ export const ShoppingAndNewView: React.FC<ShoppingAndNewViewProps> = ({
 
       {subTab === 'upcoming' ? (
         <div className="space-y-2.5">
+          {/* スマホへの直接プッシュ通知＆iPhoneカレンダー通知カード */}
+          <div className="rounded-3xl bg-white p-3.5 shadow-mofu border border-mofu-pink/20 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Smartphone className="h-4 w-4 shrink-0 text-mofu-pink-dark" />
+                <span className="text-xs font-extrabold text-mofu-text truncate">
+                  スマホ直接通知（Discord不要）
+                </span>
+              </div>
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
+                  phoneNotifStatus === 'granted'
+                    ? 'bg-mofu-mint text-mofu-text'
+                    : phoneNotifStatus === 'denied'
+                      ? 'bg-mofu-pink/20 text-mofu-pink-dark'
+                      : 'bg-mofu-yellow text-mofu-text'
+                }`}
+              >
+                {phoneNotifStatus === 'granted'
+                  ? '通知 ON'
+                  : phoneNotifStatus === 'denied'
+                    ? '拒否設定中'
+                    : needsIosHomeScreen
+                      ? 'ホーム画面追加が必要'
+                      : '未設定'}
+              </span>
+            </div>
+
+            {needsIosHomeScreen && phoneNotifStatus !== 'granted' && (
+              <p className="rounded-xl bg-mofu-sub px-2.5 py-1.5 text-[10px] leading-relaxed text-mofu-muted">
+                iPhoneではSafariの「共有 → ホーム画面に追加」から開くとロック画面へ直接プッシュ通知が届きます。下の「カレンダー通知登録」なら今すぐ使えます。
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => void handleEnableOrTestPhoneNotification()}
+                className="min-h-[40px] flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-mofu-pink px-3 py-1.5 text-[11px] font-extrabold text-white shadow-sm active:scale-95 transition"
+              >
+                <BellRing className="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  {phoneNotifStatus === 'granted'
+                    ? '今すぐスマホに通知テスト'
+                    : 'スマホ通知をONにする'}
+                </span>
+              </button>
+
+              {upcomingReleases.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = downloadReleaseCalendarIcs(
+                      upcomingReleases.map((b) => ({
+                        title: b.title,
+                        releaseDate: b.sales_date,
+                        publisher: seriesMap.get(b.series_id)?.publisher,
+                      }))
+                    );
+                    onShowToast(res.message);
+                  }}
+                  className="min-h-[40px] inline-flex items-center justify-center gap-1 rounded-xl border border-mofu-mint/60 bg-mofu-mint/25 px-3 py-1.5 text-[11px] font-extrabold text-mofu-text active:scale-95 transition"
+                >
+                  <CalendarPlus className="h-3.5 w-3.5 shrink-0 text-mofu-mint-dark" />
+                  <span>カレンダー通知一括登録</span>
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="rounded-2xl bg-mofu-sub/80 p-3 text-xs text-mofu-muted space-y-2">
             <div className="flex items-center justify-between gap-2">
               <span className="min-w-0">
@@ -242,7 +359,7 @@ export const ShoppingAndNewView: React.FC<ShoppingAndNewViewProps> = ({
                 {apiCheckLog}
               </p>
             )}
-            {upcomingReleases.length > 0 && (
+            {upcomingReleases.length > 0 && discordWebhookUrl.trim().length > 0 && (
               <button
                 type="button"
                 onClick={async () => {
@@ -258,7 +375,7 @@ export const ShoppingAndNewView: React.FC<ShoppingAndNewViewProps> = ({
                 className="min-h-[38px] w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#5865F2] px-3 py-1.5 text-[11px] font-extrabold text-white shadow-sm active:scale-95 transition"
               >
                 <Bell className="h-3.5 w-3.5" />
-                <span>Discordへ新刊リストを通知送信</span>
+                <span>Discordにも新刊リストを送信（任意連携）</span>
               </button>
             )}
           </div>
@@ -315,6 +432,23 @@ export const ShoppingAndNewView: React.FC<ShoppingAndNewViewProps> = ({
                       >
                         <Check className="h-3.5 w-3.5" />
                         フラゲ・購入済みにする
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const res = downloadReleaseCalendarIcs([
+                            {
+                              title: book.title,
+                              releaseDate: book.sales_date,
+                              publisher: series?.publisher,
+                            },
+                          ]);
+                          onShowToast(res.message);
+                        }}
+                        className="min-h-[40px] inline-flex items-center gap-1 rounded-xl bg-mofu-mint/35 px-2.5 py-1.5 text-[11px] font-extrabold text-mofu-text active:scale-95 transition"
+                      >
+                        <CalendarPlus className="h-3.5 w-3.5 text-mofu-mint-dark" />
+                        <span>発売日通知</span>
                       </button>
                     </div>
                     {renderStoreLinks(book.title)}

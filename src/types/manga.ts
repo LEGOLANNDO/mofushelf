@@ -56,6 +56,7 @@ export interface AppSettings {
   geminiApiKey: string;
   rakutenAppId: string;
   discordWebhookUrl: string;
+  browserPushEnabled?: boolean;
   supabaseUrl?: string;
   supabaseAnonKey?: string;
   passcodeEnabled: boolean;

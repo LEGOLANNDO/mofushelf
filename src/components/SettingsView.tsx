@@ -18,6 +18,10 @@ import {
   Upload,
 } from 'lucide-react';
 import {
+  PhoneNotificationStatus,
+  getPhoneNotificationStatus,
+  isIosBrowserWithoutHomeScreen,
+  requestPhoneNotificationPermission,
   sendDiscordNewReleaseWebhook,
   sendLocalPushNotification,
 } from '../services/notificationService';
@@ -62,6 +66,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     return window.location.href;
   });
   const [swReady, setSwReady] = useState(false);
+  const [phoneNotifStatus, setPhoneNotifStatus] = useState<PhoneNotificationStatus>(() =>
+    getPhoneNotificationStatus()
+  );
+  const needsIosHomeScreen = isIosBrowserWithoutHomeScreen();
   const [isSyncing, setIsSyncing] = useState(false);
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<
     (Event & { prompt: () => Promise<void> }) | null
@@ -258,17 +266,101 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         )}
       </div>
 
-      {/* APIキー・Webhook設定 */}
+      {/* スマホ直接プッシュ通知＆API設定 */}
       <div className="rounded-3xl bg-white p-4 shadow-mofu border border-mofu-pink/15 space-y-3">
         <div className="flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-mofu-pink-dark" />
           <h2 className="text-sm font-extrabold text-mofu-text">
-            API連携・新刊通知設定
+            スマホ直接通知・API連携設定
           </h2>
         </div>
 
+        {/* 📱 スマホ（iPhone / Android）直接プッシュ通知セクション */}
+        <div className="rounded-2xl bg-mofu-sub/80 p-3 space-y-2.5 border border-mofu-pink/15">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Smartphone className="h-4 w-4 shrink-0 text-mofu-pink-dark" />
+              <span className="text-xs font-extrabold text-mofu-text truncate">
+                スマホへの直接通知（Discord不要）
+              </span>
+            </div>
+            <span
+              className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
+                phoneNotifStatus === 'granted'
+                  ? 'bg-mofu-mint text-mofu-text'
+                  : phoneNotifStatus === 'denied'
+                    ? 'bg-mofu-pink/20 text-mofu-pink-dark'
+                    : 'bg-mofu-yellow text-mofu-text'
+              }`}
+            >
+              {phoneNotifStatus === 'granted'
+                ? '許可済み ✅'
+                : phoneNotifStatus === 'denied'
+                  ? 'ブロック中'
+                  : needsIosHomeScreen
+                    ? 'ホーム画面追加が必要'
+                    : '未設定'}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-mofu-text">
+                起動時の自動新刊スマホ通知
+              </p>
+              <p className="text-[10px] text-mofu-muted">
+                新刊や3日以内の発売予定がある時にバナー表示
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const next = {
+                  ...draft,
+                  browserPushEnabled: !(draft.browserPushEnabled !== false),
+                };
+                setDraft(next);
+                onSaveSettings(next);
+                onShowToast(
+                  next.browserPushEnabled
+                    ? '自動スマホ通知をONにしました'
+                    : '自動スマホ通知をOFFにしました'
+                );
+              }}
+              className={`min-h-[34px] shrink-0 rounded-full px-3 text-[11px] font-extrabold transition ${
+                draft.browserPushEnabled !== false
+                  ? 'bg-mofu-mint text-mofu-text'
+                  : 'bg-mofu-sub text-mofu-muted'
+              }`}
+            >
+              {draft.browserPushEnabled !== false ? 'ON' : 'OFF'}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={async () => {
+              const res = await requestPhoneNotificationPermission();
+              setPhoneNotifStatus(res.status);
+              onShowToast(res.message);
+            }}
+            className="min-h-[42px] w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-mofu-pink px-3 text-xs font-extrabold text-white shadow-sm active:scale-95 transition"
+          >
+            <BellRing className="h-4 w-4 shrink-0" />
+            <span>
+              {phoneNotifStatus === 'granted'
+                ? '今すぐスマホにテスト通知を送る'
+                : 'スマホ通知を許可してテスト送信'}
+            </span>
+          </button>
+
+          <p className="text-[10px] leading-relaxed text-mofu-muted">
+            ※ iPhoneでは「共有 → ホーム画面に追加」から起動すると通知が届きます（iOS標準PWA機能）。アプリを開いていない日の通知も受け取りたい場合は「新刊・買物」タブの「カレンダー通知一括登録」もご利用いただけます。
+          </p>
+        </div>
+
         <label className="block text-xs font-bold text-mofu-muted">
-          Gemini API Key（表紙AI認識用）
+          Gemini API Key（表紙AI認識用・任意）
           <input
             type="password"
             value={draft.geminiApiKey}
@@ -281,7 +373,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </label>
 
         <label className="block text-xs font-bold text-mofu-muted">
-          楽天ブックス アプリID
+          楽天ブックス アプリID（任意）
           <input
             type="text"
             value={draft.rakutenAppId}
@@ -294,7 +386,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </label>
 
         <label className="block text-xs font-bold text-mofu-muted">
-          Discord Webhook URL（新刊通知用）
+          Discord Webhook URL（任意・Discordにも通知したい場合）
           <input
             type="url"
             value={draft.discordWebhookUrl}
@@ -324,22 +416,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="min-h-[44px] shrink-0 inline-flex items-center justify-center gap-1 rounded-2xl bg-mofu-sub px-3 text-xs font-extrabold text-mofu-text"
           >
             <BellRing className="h-4 w-4 text-mofu-pink-dark" />
-            通知テスト
+            通知テスト詳細
           </button>
         </div>
 
         {discordPreviewOpen && (
           <div className="space-y-2 rounded-2xl bg-[#313338] p-3 text-xs text-white">
             <p className="text-[10px] font-bold text-[#949BA4]">
-              Discord Webhook / Web Push 通知テスト
+              Discord Webhook / スマホWebプッシュ 通知テスト
             </p>
             <div className="border-l-4 border-mofu-pink pl-2.5 space-y-0.5">
               <p className="font-extrabold text-mofu-pink">
                 📚 新刊がもうすぐ発売されます！
               </p>
-              <p className="font-bold">もふもふカフェの魔法使い 18巻</p>
+              <p className="font-bold">葬送のフリーレン 15巻</p>
               <p className="text-[11px] text-white/80">
-                あと3日で発売 ／ パステルコミックス
+                あと3日で発売 ／ 小学館
               </p>
             </div>
             <div className="grid grid-cols-2 gap-1.5 pt-1">
