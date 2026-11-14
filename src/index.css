@@ -4,7 +4,8 @@
 
 @layer base {
   html,
-  body {
+  body,
+  #root {
     font-family:
       'M PLUS Rounded 1c',
       'Hiragino Maru Gothic ProN',
@@ -13,8 +14,21 @@
       sans-serif;
     background-color: #fffdf9;
     color: #4a3f35;
+    width: 100%;
+    max-width: 100vw;
     overflow-x: hidden;
+    touch-action: manipulation;
+    -webkit-text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
+  }
+
+  /* iPhone/iOS Safari でフォーカス時に自動ズーム＆右端見切れを防ぐため16px未満にしない */
+  @media screen and (max-width: 768px) {
+    input:not([type='range']):not([type='checkbox']),
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
   }
 }
 

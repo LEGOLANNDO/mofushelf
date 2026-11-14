@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
-  BookHeart,
   BookOpen,
   CalendarHeart,
   Lock,
@@ -27,6 +26,7 @@ import {
   Book,
   BookTag,
   CatalogSeries,
+  MangaMediaType,
   Series,
   SeriesStatus,
   ViewportPreview,
@@ -37,6 +37,10 @@ import {
   FetchedCatalogSeries,
   OPENBD_REAL_SERIES_PRESETS,
   OpenBdVolumeMeta,
+  areSeriesSameWork,
+  detectMediaType,
+  findMatchingExistingSeries,
+  formatSeriesTitleWithMedia,
   normalizeSeriesTitle,
   parseMangaTitleAndVolume,
   searchSeriesByKeyword,
@@ -203,22 +207,109 @@ export function App() {
         return s;
       });
 
-      let booksChanged = false;
-      const cleanedBooks = currentBooks.map((b) => {
-        if (/[=＝]/.test(b.title)) {
-          booksChanged = true;
-          const parsed = parseMangaTitleAndVolume(b.title);
-          const jpTitle = stripParallelTitle(parsed.seriesTitle) || parsed.seriesTitle;
-          return {
-            ...b,
-            title: `${jpTitle} ${b.volume_number}巻`,
-          };
+      const dedupedSeries: Series[] = [];
+      const mergeIdMap = new Map<string, string>();
+      nextSeries.forEach((s) => {
+        const detectedMedia: MangaMediaType =
+          s.media_type ||
+          detectMediaType({ rawTitle: s.title, publisher: s.publisher });
+        const normalizedSeries: Series = {
+          ...s,
+          media_type: detectedMedia,
+          title: formatSeriesTitleWithMedia(s.title, detectedMedia),
+        };
+        if (
+          normalizedSeries.media_type !== s.media_type ||
+          normalizedSeries.title !== s.title
+        ) {
+          seriesChanged = true;
         }
-        return b;
+        const keeper = dedupedSeries.find((k) =>
+          areSeriesSameWork(
+            {
+              title: k.title,
+              mediaType: k.media_type || 'comic',
+              publisher: k.publisher,
+            },
+            {
+              title: normalizedSeries.title,
+              mediaType: normalizedSeries.media_type || 'comic',
+              publisher: normalizedSeries.publisher,
+            }
+          )
+        );
+        if (!keeper) {
+          dedupedSeries.push(normalizedSeries);
+        } else {
+          seriesChanged = true;
+          mergeIdMap.set(normalizedSeries.id, keeper.id);
+          keeper.total_published = Math.max(
+            keeper.total_published,
+            normalizedSeries.total_published
+          );
+          keeper.is_pinned = Boolean(
+            keeper.is_pinned || normalizedSeries.is_pinned
+          );
+          if (
+            (keeper.author === '著者情報なし' || keeper.author === '著者不明') &&
+            normalizedSeries.author
+          ) {
+            keeper.author = normalizedSeries.author;
+          }
+        }
       });
 
+      if (mergeIdMap.size > 0) {
+        expandedSeries.forEach((info) => {
+          const mapped = mergeIdMap.get(info.seriesId);
+          if (mapped) info.seriesId = mapped;
+        });
+      }
+
+      let booksChanged = false;
+      const cleanedBooksRaw = currentBooks.map((b) => {
+        let nextBook = b;
+        const remappedSeriesId = mergeIdMap.get(b.series_id);
+        if (remappedSeriesId && remappedSeriesId !== b.series_id) {
+          booksChanged = true;
+          nextBook = {
+            ...nextBook,
+            series_id: remappedSeriesId,
+            id: `${remappedSeriesId}-vol-${nextBook.volume_number}`,
+          };
+        }
+        if (/[=＝]/.test(nextBook.title)) {
+          booksChanged = true;
+          const parsed = parseMangaTitleAndVolume(nextBook.title);
+          const jpTitle = stripParallelTitle(parsed.seriesTitle) || parsed.seriesTitle;
+          nextBook = {
+            ...nextBook,
+            title: `${jpTitle} ${nextBook.volume_number}巻`,
+          };
+        }
+        return nextBook;
+      });
+
+      const mergedBookMap = new Map<string, Book>();
+      cleanedBooksRaw.forEach((b) => {
+        const key = `${b.series_id}::${b.volume_number}`;
+        const prevBook = mergedBookMap.get(key);
+        if (!prevBook) {
+          mergedBookMap.set(key, b);
+        } else {
+          booksChanged = true;
+          mergedBookMap.set(key, {
+            ...prevBook,
+            is_owned: prevBook.is_owned || b.is_owned,
+            registered_at: prevBook.registered_at || b.registered_at,
+            cover_url: prevBook.cover_url || b.cover_url,
+          });
+        }
+      });
+      const cleanedBooks = Array.from(mergedBookMap.values());
+
       if (seriesChanged || booksChanged) {
-        const finalSeries = seriesChanged ? nextSeries : currentSeries;
+        const finalSeries = seriesChanged ? dedupedSeries : currentSeries;
         const additions: Book[] = [];
         expandedSeries.forEach((info) => {
           const existingVols = new Set(
@@ -302,12 +393,18 @@ export function App() {
     }
   };
 
-  const handleBulkOwnedUpTo = (seriesId: string, upToVolume: number) => {
+  const handleBulkOwnedUpTo = (
+    seriesId: string,
+    upToVolume: number,
+    fromVolume = 1
+  ) => {
+    const startVol = Math.max(1, Math.min(fromVolume, upToVolume));
+    const endVol = Math.max(startVol, upToVolume);
     const targetSeries = seriesList.find((s) => s.id === seriesId);
     setBooks((prev) =>
       prev.map((b) => {
         if (b.series_id !== seriesId) return b;
-        if (b.volume_number <= upToVolume) {
+        if (b.volume_number >= startVol && b.volume_number <= endVol) {
           return {
             ...b,
             is_owned: true,
@@ -319,7 +416,7 @@ export function App() {
     );
     triggerConfetti();
     showToast(
-      `『${targetSeries?.title || 'シリーズ'}』1〜${upToVolume}巻を所持登録しました！`
+      `『${targetSeries?.title || 'シリーズ'}』${startVol}〜${endVol}巻を所持登録しました！`
     );
   };
 
@@ -345,6 +442,23 @@ export function App() {
           : s
       )
     );
+  };
+
+  const handleToggleSeriesPin = (seriesId: string) => {
+    const target = seriesList.find((s) => s.id === seriesId);
+    const nextPinned = !target?.is_pinned;
+    setSeriesList((prev) =>
+      prev.map((s) =>
+        s.id === seriesId ? { ...s, is_pinned: !s.is_pinned } : s
+      )
+    );
+    if (target) {
+      showToast(
+        nextPinned
+          ? `『${target.title}』をピン留めしました`
+          : `『${target.title}』のピン留めを解除しました`
+      );
+    }
   };
 
   const handleDeleteSeries = (seriesId: string) => {
@@ -536,14 +650,23 @@ export function App() {
     isSpecialEdition?: boolean;
     volumesMeta?: OpenBdVolumeMeta[];
   }): { status: 'added' | 'updated' | 'duplicate'; book: Book } => {
-    const cleanPayloadSeriesTitle = parseMangaTitleAndVolume(payload.seriesTitle).seriesTitle || payload.seriesTitle;
-    const normalizedTarget = normalizeSeriesTitle(cleanPayloadSeriesTitle);
-    const matchedSeries =
-      seriesList.find((s) => s.id === payload.seriesId) ||
-      seriesList.find((s) => {
-        const cleanExisting = parseMangaTitleAndVolume(s.title).seriesTitle || s.title;
-        return normalizeSeriesTitle(cleanExisting) === normalizedTarget;
-      });
+    const parsedPayloadSeries = parseMangaTitleAndVolume(payload.seriesTitle);
+    const detectedMedia: MangaMediaType = detectMediaType({
+      rawTitle: payload.seriesTitle,
+      seriesTitle: parsedPayloadSeries.seriesTitle,
+      publisher: payload.publisher,
+    });
+    const baseCleanTitle = parsedPayloadSeries.seriesTitle || payload.seriesTitle;
+    const cleanPayloadSeriesTitle = formatSeriesTitleWithMedia(
+      baseCleanTitle,
+      detectedMedia
+    );
+    const matchedSeries = findMatchingExistingSeries(seriesList, {
+      id: payload.seriesId,
+      title: cleanPayloadSeriesTitle,
+      mediaType: detectedMedia,
+      publisher: payload.publisher,
+    });
 
     const targetSeriesId = matchedSeries?.id || payload.seriesId;
     const volumeMetaMap = new Map(
@@ -586,6 +709,7 @@ export function App() {
         notify_new_release: true,
         status: 'reading',
         total_published: total,
+        media_type: detectedMedia,
         accent_color: payload.accentColor,
         created_at: new Date().toISOString(),
       };
@@ -731,14 +855,26 @@ export function App() {
 
   const handleBulkRegisterCatalog = (
     catalog: CatalogSeries | FetchedCatalogSeries,
-    upToVolume: number
+    upToVolume: number,
+    fromVolume = 1
   ) => {
-    const cleanTitle =
+    const startVol = Math.max(1, Math.min(fromVolume, upToVolume));
+    const endVol = Math.max(startVol, upToVolume);
+    const detectedMedia: MangaMediaType =
+      catalog.media_type ||
+      detectMediaType({
+        rawTitle: catalog.title,
+        publisher: catalog.publisher,
+      });
+    const baseCleanTitle =
       parseMangaTitleAndVolume(catalog.title).seriesTitle || catalog.title;
-    const normalizedTarget = normalizeSeriesTitle(cleanTitle);
-    const matchedSeries =
-      seriesList.find((s) => s.id === catalog.id) ||
-      seriesList.find((s) => normalizeSeriesTitle(s.title) === normalizedTarget);
+    const cleanTitle = formatSeriesTitleWithMedia(baseCleanTitle, detectedMedia);
+    const matchedSeries = findMatchingExistingSeries(seriesList, {
+      id: catalog.id,
+      title: cleanTitle,
+      mediaType: detectedMedia,
+      publisher: catalog.publisher,
+    });
 
     const volumeMap = new Map(
       ('volumes' in catalog && catalog.volumes ? catalog.volumes : []).map((vm) => [
@@ -748,13 +884,14 @@ export function App() {
     );
 
     if (!matchedSeries) {
-      const total = Math.max(catalog.total_published, upToVolume, 1);
+      const total = Math.max(catalog.total_published, endVol, 1);
       const repCover =
-        volumeMap.get(upToVolume)?.coverUrl ||
+        volumeMap.get(endVol)?.coverUrl ||
+        volumeMap.get(startVol)?.coverUrl ||
         volumeMap.get(1)?.coverUrl ||
         generatePastelCover(
           cleanTitle,
-          upToVolume,
+          endVol,
           catalog.author,
           catalog.accent_color
         );
@@ -768,6 +905,7 @@ export function App() {
         notify_new_release: catalog.status === 'reading',
         status: catalog.status,
         total_published: total,
+        media_type: detectedMedia,
         accent_color: catalog.accent_color,
         created_at: new Date().toISOString(),
       };
@@ -778,7 +916,7 @@ export function App() {
       );
       const newBooks: Book[] = [];
       for (let v = 1; v <= total; v += 1) {
-        const owned = v <= upToVolume;
+        const owned = v >= startVol && v <= endVol;
         const apiMeta = volumeMap.get(v);
         newBooks.push({
           id: `${catalog.id}-vol-${v}`,
@@ -825,7 +963,9 @@ export function App() {
       }
       setBooks((prev) => [...prev, ...newBooks]);
       triggerConfetti();
-      showToast(`『${cleanTitle}』1〜${upToVolume}巻をまとめて登録しました！`);
+      showToast(
+        `『${cleanTitle}』${startVol}〜${endVol}巻をまとめて登録しました！`
+      );
       return;
     }
 
@@ -833,7 +973,7 @@ export function App() {
     const newTotal = Math.max(
       matchedSeries.total_published,
       catalog.total_published,
-      upToVolume
+      endVol
     );
     const seedNum = Math.abs(
       matchedSeries.id.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
@@ -845,6 +985,7 @@ export function App() {
           ? {
               ...s,
               title: cleanTitle,
+              media_type: s.media_type || detectedMedia,
               author:
                 s.author === '著者情報なし' || s.author === '著者不明'
                   ? catalog.author
@@ -853,7 +994,8 @@ export function App() {
                 s.publisher === '出版社不明' ? catalog.publisher : s.publisher,
               total_published: newTotal,
               cover_url:
-                volumeMap.get(upToVolume)?.coverUrl ||
+                volumeMap.get(endVol)?.coverUrl ||
+                volumeMap.get(startVol)?.coverUrl ||
                 volumeMap.get(1)?.coverUrl ||
                 s.cover_url,
             }
@@ -872,7 +1014,10 @@ export function App() {
       const updatedExisting = prev.map((b) => {
         if (b.series_id !== matchedSeries.id) return b;
         const apiMeta = volumeMap.get(b.volume_number);
-        const shouldOwn = b.volume_number <= upToVolume ? true : b.is_owned;
+        const shouldOwn =
+          b.volume_number >= startVol && b.volume_number <= endVol
+            ? true
+            : b.is_owned;
         return {
           ...b,
           isbn: apiMeta?.isbn || b.isbn,
@@ -889,7 +1034,7 @@ export function App() {
       const missingBooks: Book[] = [];
       for (let v = 1; v <= newTotal; v += 1) {
         if (existingByVol.has(v)) continue;
-        const owned = v <= upToVolume;
+        const owned = v >= startVol && v <= endVol;
         const apiMeta = volumeMap.get(v);
         missingBooks.push({
           id: `${matchedSeries.id}-vol-${v}`,
@@ -919,7 +1064,7 @@ export function App() {
 
     triggerConfetti();
     showToast(
-      `『${cleanTitle}』1〜${upToVolume}巻を所持登録しました！（全${newTotal}巻）`
+      `『${cleanTitle}』${startVol}〜${endVol}巻を所持登録しました！（全${newTotal}巻）`
     );
   };
 
@@ -1024,9 +1169,11 @@ export function App() {
         {/* 上部ヘッダー */}
         <header className="sticky top-0 z-30 safe-top-header flex items-center justify-between gap-2 border-b border-mofu-sub bg-mofu-bg/95 px-3.5 pb-2.5 backdrop-blur-sm">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-mofu-pink text-white shadow-sm">
-              <BookHeart className="h-5 w-5" />
-            </div>
+            <img
+              src={`${import.meta.env.BASE_URL}icons/icon-192.svg`}
+              alt="MofuShelf"
+              className="h-9 w-9 shrink-0 rounded-xl shadow-sm"
+            />
             <div className="min-w-0">
               <h1 className="truncate text-sm font-extrabold leading-tight text-mofu-text">
                 MofuShelf
@@ -1071,6 +1218,7 @@ export function App() {
               onBulkOwnedUpTo={handleBulkOwnedUpTo}
               onUpdateSeriesStatus={handleUpdateSeriesStatus}
               onToggleSeriesNotify={handleToggleSeriesNotify}
+              onToggleSeriesPin={handleToggleSeriesPin}
               onUpdateBookMeta={handleUpdateBookMeta}
               onDeleteSeries={handleDeleteSeries}
               onNavigateToScan={(tab) => {

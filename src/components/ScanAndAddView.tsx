@@ -68,7 +68,8 @@ interface ScanAndAddViewProps {
   }) => { status: 'added' | 'updated' | 'duplicate'; book: Book };
   onBulkRegisterCatalog: (
     catalog: CatalogSeries | FetchedCatalogSeries,
-    upToVolume: number
+    upToVolume: number,
+    fromVolume?: number
   ) => void;
   onGoToBookshelf: () => void;
 }
@@ -131,14 +132,17 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
   const [selectedCatalog, setSelectedCatalog] = useState<
     CatalogSeries | FetchedCatalogSeries
   >(CATALOG_SERIES[3]);
+  const [fromVolume, setFromVolume] = useState<number>(1);
   const [upToVolume, setUpToVolume] = useState<number>(12);
+  const [rangeTapTarget, setRangeTapTarget] = useState<'end' | 'start'>('end');
   const searchSeqRef = useRef(0);
 
   // 本棚の既存データ + API取得データ + カタログを正規化タイトル基準で統合（既刊巻数が多い方/API結果を優先）
   const searchableCatalog = useMemo(() => {
     const map = new Map<string, CatalogSeries | FetchedCatalogSeries>();
     const upsert = (c: CatalogSeries | FetchedCatalogSeries, prefer: boolean) => {
-      const normKey = normalizeSeriesTitle(c.title) || c.id;
+      const mediaPrefix = c.media_type || 'comic';
+      const normKey = `${mediaPrefix}:${normalizeSeriesTitle(c.title) || c.id}`;
       const existing = map.get(normKey);
       if (
         !existing ||
@@ -164,6 +168,7 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
           publisher: s.publisher,
           total_published: s.total_published,
           status: s.status,
+          media_type: s.media_type,
           accent_color: s.accent_color || '#FF8FA3',
         },
         false
@@ -212,6 +217,8 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
       existingBooks.length > 0
         ? Math.max(...existingBooks.map((b) => b.volume_number))
         : cat.total_published;
+    setFromVolume(1);
+    setRangeTapTarget('end');
     setUpToVolume(Math.max(1, Math.min(cat.total_published, currentMax)));
   };
 
@@ -623,6 +630,7 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
   };
 
   return (
+    <>
     <div className="space-y-3">
       {/* 3つの登録モード切り替えタブ */}
       <div className="grid grid-cols-3 gap-1.5 rounded-2xl bg-mofu-sub p-1.5">
@@ -703,14 +711,26 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
               }}
               className="flex gap-2"
             >
-              <input
-                type="text"
-                inputMode="numeric"
-                value={manualIsbn}
-                onChange={(e) => setManualIsbn(e.target.value)}
-                placeholder="ISBN13桁を入力 (例: 9784098501809)"
-                className="h-11 min-w-0 flex-1 rounded-2xl border border-mofu-pink/25 bg-mofu-bg px-3 text-sm text-mofu-text focus:border-mofu-pink focus:outline-none"
-              />
+              <div className="relative flex-1 min-w-0">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={manualIsbn}
+                  onChange={(e) => setManualIsbn(e.target.value)}
+                  placeholder="ISBN13桁を入力 (例: 9784098501809)"
+                  className="h-11 w-full min-w-0 rounded-2xl border border-mofu-pink/25 bg-mofu-bg pl-3 pr-9 text-sm text-mofu-text focus:border-mofu-pink focus:outline-none"
+                />
+                {manualIsbn.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setManualIsbn('')}
+                    aria-label="入力をクリア"
+                    className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-mofu-sub text-mofu-muted hover:bg-mofu-pink/15 hover:text-mofu-text transition"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
               <button
                 type="submit"
                 disabled={isLookingUpIsbn}
@@ -1002,7 +1022,7 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
                         }))
                       }
                       placeholder="作品名"
-                      className="col-span-8 h-10 rounded-xl border border-mofu-pink/20 bg-white px-2.5 text-xs text-mofu-text"
+                      className="col-span-8 h-10 w-full min-w-0 rounded-xl border border-mofu-pink/20 bg-white px-2.5 text-xs text-mofu-text"
                     />
                     <input
                       type="number"
@@ -1015,7 +1035,7 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
                         }))
                       }
                       placeholder="巻"
-                      className="col-span-4 h-10 rounded-xl border border-mofu-pink/20 bg-white px-2 text-xs text-mofu-text"
+                      className="col-span-4 h-10 w-full min-w-0 rounded-xl border border-mofu-pink/20 bg-white px-2 text-xs text-mofu-text"
                     />
                   </div>
                   <div className="flex gap-1.5">
@@ -1133,7 +1153,7 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
                 タイトル検索＆一括登録
               </h2>
               <p className="text-[11px] text-mofu-muted">
-                iTunes・openBD（APIキー不要）や楽天ブックスAPIから全既刊を取得し、「1巻〜○巻まで」まとめて登録できます。
+                iTunes・openBD（APIキー不要）や楽天ブックスAPIから全既刊を取得し、「3巻〜10巻まで」など開始・終了巻を自由に指定してまとめて登録できます。
               </p>
             </div>
 
@@ -1141,12 +1161,22 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
               <div className="relative flex-1 min-w-0">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-mofu-muted" />
                 <input
-                  type="search"
+                  type="text"
                   value={catalogQuery}
                   onChange={(e) => setCatalogQuery(e.target.value)}
                   placeholder="作品名を入力 (例: ダンダダン)..."
-                  className="h-11 w-full rounded-2xl border border-mofu-pink/25 bg-mofu-bg pl-9 pr-3 text-sm text-mofu-text focus:border-mofu-pink focus:outline-none"
+                  className="h-11 w-full min-w-0 rounded-2xl border border-mofu-pink/25 bg-mofu-bg pl-9 pr-9 text-sm text-mofu-text focus:border-mofu-pink focus:outline-none"
                 />
+                {catalogQuery.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCatalogQuery('')}
+                    aria-label="検索をクリア"
+                    className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-mofu-sub text-mofu-muted hover:bg-mofu-pink/15 hover:text-mofu-text transition"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               <button
                 type="submit"
@@ -1257,7 +1287,10 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setUpToVolume(selectedCatalog.total_published)}
+                onClick={() => {
+                  setFromVolume(1);
+                  setUpToVolume(selectedCatalog.total_published);
+                }}
                 className="shrink-0 rounded-full bg-mofu-sub px-2.5 py-1 text-[11px] font-extrabold text-mofu-pink-dark hover:bg-mofu-pink/15 active:scale-95 transition"
               >
                 全{selectedCatalog.total_published}巻を選択
@@ -1265,23 +1298,92 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
             </div>
 
             <div className="rounded-2xl bg-mofu-sub p-3 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-extrabold text-mofu-text">
+                  登録する巻の範囲
+                </span>
+                <span className="rounded-full bg-white px-2.5 py-0.5 text-sm font-extrabold text-mofu-pink-dark shadow-sm">
+                  {fromVolume}巻 〜 {upToVolume}巻（
+                  {Math.max(1, upToVolume - fromVolume + 1)}冊）
+                </span>
+              </div>
+
+              {/* 開始巻 */}
+              <div className="flex items-center gap-1.5">
+                <span className="w-10 shrink-0 text-[11px] font-extrabold text-mofu-muted">
+                  開始
+                </span>
                 <button
                   type="button"
-                  onClick={() => setUpToVolume((v) => Math.max(1, v - 1))}
-                  aria-label="巻数を1減らす"
-                  className="tap-target flex items-center justify-center rounded-2xl bg-white text-mofu-text shadow-sm active:scale-95 transition"
+                  onClick={() => setFromVolume((v) => Math.max(1, v - 1))}
+                  aria-label="開始巻を1減らす"
+                  className="h-9 w-9 shrink-0 flex items-center justify-center rounded-xl bg-white text-mofu-text shadow-sm active:scale-95 transition"
                 >
-                  <Minus className="h-4 w-4" />
+                  <Minus className="h-3.5 w-3.5" />
                 </button>
-                <div className="flex-1 text-center">
-                  <span className="text-base font-extrabold text-mofu-text">
-                    1巻 〜 {upToVolume}巻
-                  </span>
-                  <p className="text-[10px] font-bold text-mofu-muted">
-                    下の表紙タップでも巻数を指定できます
-                  </p>
-                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={selectedCatalog.total_published}
+                  value={fromVolume}
+                  aria-label="開始巻スライダー"
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    setFromVolume(next);
+                    if (next > upToVolume) setUpToVolume(next);
+                  }}
+                  className="flex-1 min-w-0 accent-[#7AD9C5]"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = Math.min(
+                      selectedCatalog.total_published,
+                      fromVolume + 1
+                    );
+                    setFromVolume(next);
+                    if (next > upToVolume) setUpToVolume(next);
+                  }}
+                  aria-label="開始巻を1増やす"
+                  className="h-9 w-9 shrink-0 flex items-center justify-center rounded-xl bg-white text-mofu-text shadow-sm active:scale-95 transition"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+                <span className="w-12 shrink-0 text-right text-xs font-extrabold text-mofu-text">
+                  {fromVolume}巻〜
+                </span>
+              </div>
+
+              {/* 終了巻 */}
+              <div className="flex items-center gap-1.5">
+                <span className="w-10 shrink-0 text-[11px] font-extrabold text-mofu-muted">
+                  終了
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = Math.max(1, upToVolume - 1);
+                    setUpToVolume(next);
+                    if (next < fromVolume) setFromVolume(next);
+                  }}
+                  aria-label="終了巻を1減らす"
+                  className="h-9 w-9 shrink-0 flex items-center justify-center rounded-xl bg-white text-mofu-text shadow-sm active:scale-95 transition"
+                >
+                  <Minus className="h-3.5 w-3.5" />
+                </button>
+                <input
+                  type="range"
+                  min={1}
+                  max={selectedCatalog.total_published}
+                  value={upToVolume}
+                  aria-label="終了巻スライダー"
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    setUpToVolume(next);
+                    if (next < fromVolume) setFromVolume(next);
+                  }}
+                  className="flex-1 min-w-0 accent-[#FF8FA3]"
+                />
                 <button
                   type="button"
                   onClick={() =>
@@ -1289,32 +1391,57 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
                       Math.min(selectedCatalog.total_published, v + 1)
                     )
                   }
-                  aria-label="巻数を1増やす"
-                  className="tap-target flex items-center justify-center rounded-2xl bg-white text-mofu-text shadow-sm active:scale-95 transition"
+                  aria-label="終了巻を1増やす"
+                  className="h-9 w-9 shrink-0 flex items-center justify-center rounded-xl bg-white text-mofu-text shadow-sm active:scale-95 transition"
                 >
-                  <Plus className="h-4 w-4" />
+                  <Plus className="h-3.5 w-3.5" />
                 </button>
+                <span className="w-12 shrink-0 text-right text-xs font-extrabold text-mofu-pink-dark">
+                  〜{upToVolume}巻
+                </span>
               </div>
-
-              <input
-                type="range"
-                min={1}
-                max={selectedCatalog.total_published}
-                value={upToVolume}
-                onChange={(e) => setUpToVolume(Number(e.target.value))}
-                className="w-full accent-[#FF8FA3]"
-              />
 
               <button
                 type="button"
                 onClick={() => {
-                  onBulkRegisterCatalog(selectedCatalog, upToVolume);
+                  onBulkRegisterCatalog(selectedCatalog, upToVolume, fromVolume);
                 }}
                 className="min-h-[48px] w-full flex items-center justify-center gap-1.5 rounded-2xl bg-mofu-pink px-4 py-3 text-sm font-extrabold text-white shadow-mofu active:scale-[0.98] transition"
               >
                 <CheckCircle2 className="h-4 w-4 shrink-0" />
-                <span>1巻〜{upToVolume}巻までまとめて所持登録！</span>
+                <span>
+                  {fromVolume}巻〜{upToVolume}巻までまとめて所持登録！
+                </span>
               </button>
+            </div>
+
+            {/* 表紙タップ対象切り替え */}
+            <div className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="font-bold text-mofu-muted">表紙タップで指定:</span>
+              <div className="inline-flex rounded-xl bg-mofu-sub p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setRangeTapTarget('start')}
+                  className={`rounded-lg px-2.5 py-1 font-extrabold transition ${
+                    rangeTapTarget === 'start'
+                      ? 'bg-white text-mofu-pink-dark shadow-sm'
+                      : 'text-mofu-muted'
+                  }`}
+                >
+                  開始巻 ({fromVolume}巻〜)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRangeTapTarget('end')}
+                  className={`rounded-lg px-2.5 py-1 font-extrabold transition ${
+                    rangeTapTarget === 'end'
+                      ? 'bg-white text-mofu-pink-dark shadow-sm'
+                      : 'text-mofu-muted'
+                  }`}
+                >
+                  終了巻 (〜{upToVolume}巻)
+                </button>
+              </div>
             </div>
 
             {/* 既刊表紙グリッド */}
@@ -1323,7 +1450,7 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
                 { length: selectedCatalog.total_published },
                 (_, idx) => idx + 1
               ).map((vol) => {
-                const included = vol <= upToVolume;
+                const included = vol >= fromVolume && vol <= upToVolume;
                 const apiVol =
                   'volumes' in selectedCatalog
                     ? selectedCatalog.volumes?.find((v) => v.volumeNumber === vol)
@@ -1338,7 +1465,15 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
                   <button
                     key={vol}
                     type="button"
-                    onClick={() => setUpToVolume(vol)}
+                    onClick={() => {
+                      if (rangeTapTarget === 'start') {
+                        setFromVolume(vol);
+                        if (vol > upToVolume) setUpToVolume(vol);
+                      } else {
+                        setUpToVolume(vol);
+                        if (vol < fromVolume) setFromVolume(vol);
+                      }
+                    }}
                     className={`relative overflow-hidden rounded-xl border p-1 text-center transition ${
                       included
                         ? 'border-mofu-pink bg-mofu-pink/10 ring-1 ring-mofu-pink/40'
@@ -1378,11 +1513,12 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
           </div>
         </div>
       )}
+    </div>
 
       {/* 重複購入防止アラートモーダル */}
       {duplicateBook && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-mofu-text/55 p-4"
+          className="fixed inset-0 z-50 !mt-0 flex items-center justify-center bg-mofu-text/55 backdrop-blur-md [-webkit-backdrop-filter:blur(12px)] p-4"
           role="alertdialog"
           aria-modal="true"
         >
@@ -1437,6 +1573,6 @@ export const ScanAndAddView: React.FC<ScanAndAddViewProps> = ({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };

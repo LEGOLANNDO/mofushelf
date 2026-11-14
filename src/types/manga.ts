@@ -9,6 +9,8 @@ export const BOOK_TAGS: BookTag[] = [
   'サイン本',
 ];
 
+export type MangaMediaType = 'comic' | 'novel';
+
 export interface Series {
   id: string;
   title: string;
@@ -18,6 +20,8 @@ export interface Series {
   notify_new_release: boolean;
   status: SeriesStatus;
   total_published: number;
+  media_type?: MangaMediaType;
+  is_pinned?: boolean;
   accent_color?: string;
   created_at: string;
 }
@@ -44,6 +48,7 @@ export interface CatalogSeries {
   publisher: string;
   total_published: number;
   status: SeriesStatus;
+  media_type?: MangaMediaType;
   accent_color: string;
   upcoming_volume?: {
     volume_number: number;

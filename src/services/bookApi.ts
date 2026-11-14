@@ -1,11 +1,12 @@
 import { CATALOG_SERIES } from '../data/mockData';
-import { CatalogSeries } from '../types/manga';
+import { CatalogSeries, MangaMediaType, Series } from '../types/manga';
 import { generatePastelCover } from '../utils/coverGenerator';
 
 export interface ParsedMangaTitle {
   seriesTitle: string;
   volumeNumber: number;
   isSpecialEdition: boolean;
+  mediaType: MangaMediaType;
 }
 
 export interface FetchedBookInfo {
@@ -18,6 +19,7 @@ export interface FetchedBookInfo {
   coverUrl: string;
   salesDate: string;
   isSpecialEdition: boolean;
+  mediaType?: MangaMediaType;
   source: 'openbd' | 'rakuten' | 'fallback';
 }
 
@@ -111,7 +113,10 @@ function toHalfWidth(str: string): string {
 export function normalizeSeriesTitle(title: string): string {
   return toHalfWidth(title)
     .toLowerCase()
-    .replace(/[\s・:：!！?？\-―~～()（）【】「」『』]/g, '');
+    .replace(
+      /[\s・:：!！?？\-―~～〜()（）【】「」『』.,、。'’"”★☆♪♡]/g,
+      ''
+    );
 }
 
 export function stripParallelTitle(raw: string): string {
@@ -119,6 +124,66 @@ export function stripParallelTitle(raw: string): string {
   return toHalfWidth(raw)
     .replace(/\s*[=＝]\s*.*$/g, '')
     .trim();
+}
+
+const NOVEL_IMPRINT_RE =
+  /(MF文庫J|電撃文庫|角川スニーカー文庫|スニーカー文庫|富士見ファンタジア文庫|ファンタジア文庫|GA文庫|HJ文庫|講談社ラノベ文庫|ガガガ文庫|オーバーラップ文庫|ダッシュエックス文庫|スーパーダッシュ文庫|GCN文庫|ファミ通文庫|カドカワBOOKS|MFブックス|ツギクルブックス|ヒーロー文庫|モーニングスターブックス|アース・スターノベル|富士見L文庫|角川文庫|新潮文庫|講談社文庫|集英社文庫|ハヤカワ文庫|角川つばさ文庫)/i;
+
+const COMIC_EXPLICIT_RE =
+  /(?:【|\(|（|\[)(?:コミック|コミックス|漫画|マンガ|comic|comics)(?:】|\)|）|\])|コミカライズ|漫画版|コミック版/i;
+
+const NOVEL_EXPLICIT_RE =
+  /(?:【|\(|（|\[|\s|^)(?:小説版?|ラノベ|ノベルズ?|ノベル|ライトノベル|novels?|light\s*novels?)(?:】|\)|）|\]|\s|$)|（小説版）|\(小説版\)/i;
+
+export function detectMediaType(options: {
+  rawTitle?: string;
+  seriesTitle?: string;
+  publisher?: string;
+  genres?: string[];
+}): MangaMediaType {
+  const combinedTitle = toHalfWidth(
+    `${options.rawTitle || ''} ${options.seriesTitle || ''}`
+  );
+  const publisher = toHalfWidth(options.publisher || '');
+  const genresJoined = (options.genres || []).join(' ').toLowerCase();
+
+  const hasExplicitComic = COMIC_EXPLICIT_RE.test(combinedTitle);
+  const hasExplicitNovel = NOVEL_EXPLICIT_RE.test(combinedTitle);
+
+  if (hasExplicitComic && !hasExplicitNovel) return 'comic';
+  if (hasExplicitNovel && !hasExplicitComic) return 'novel';
+
+  if (genresJoined) {
+    const genreComic = /(マンガ|コミック|漫画|manga|comic|graphic novel)/i.test(
+      genresJoined
+    );
+    const genreNovel =
+      /(小説|ライトノベル|ノベル|文学|文芸|novel|literature|fiction)/i.test(
+        genresJoined
+      );
+    if (genreNovel && !genreComic) return 'novel';
+    if (genreComic && !genreNovel) return 'comic';
+  }
+
+  if (
+    !hasExplicitComic &&
+    (NOVEL_IMPRINT_RE.test(publisher) || NOVEL_IMPRINT_RE.test(combinedTitle))
+  ) {
+    return 'novel';
+  }
+
+  return 'comic';
+}
+
+export function formatSeriesTitleWithMedia(
+  seriesTitle: string,
+  mediaType: MangaMediaType
+): string {
+  const clean = seriesTitle.trim();
+  if (mediaType === 'novel' && !/小説|ラノベ|ノベル/i.test(clean)) {
+    return `${clean} (小説版)`;
+  }
+  return clean;
 }
 
 export function parseExplicitVolumeString(volRaw?: string): number | null {
@@ -152,65 +217,278 @@ export function parseExplicitVolumeString(volRaw?: string): number | null {
 
 export function isNoiseBookItem(title: string, volumeStr?: string): boolean {
   const combined = toHalfWidth(`${title} ${volumeStr || ''}`);
-  return /(総集編|公式ファンブック|ファンブック|キャラクターブック|公式ガイド|ガイドブック|副読本|ノベライズ|小説アニメ|小説.*前奏|小説版|画集|イラスト集|図録|原画集|アンソロジー|アニメコミックス|フィルムコミック|カレンダー|ステッカー|シール|分冊版|単話版?|合本版|全巻セット|セット買い|ベスト10|spoon\.2di|\bmagazine\b|週刊少年|月刊少年|ジャンプgiga|徹底解説|読み解く|検定|大研究|劇場版)/i.test(
+  return /(総集編|公式ファンブック|ファンブック|キャラクターブック|公式ガイド|ガイドブック|副読本|画集|イラスト集|図録|原画集|アンソロジー|アニメコミックス|フィルムコミック|カレンダー|ステッカー|シール|分冊版|単話版?|合本版|全巻セット|セット買い|ベスト10|spoon\.2di|\bmagazine\b|週刊少年|月刊少年|ジャンプgiga|徹底解説|読み解く|検定|大研究|劇場版)/i.test(
     combined
   );
 }
 
+const CIRCLED_NUM_OFFSET = 0x2460; // ①..⑳
+const ROMAN_MAP: Record<string, number> = {
+  Ⅰ: 1,
+  Ⅱ: 2,
+  Ⅲ: 3,
+  Ⅳ: 4,
+  Ⅴ: 5,
+  Ⅵ: 6,
+  Ⅶ: 7,
+  Ⅷ: 8,
+  Ⅸ: 9,
+  Ⅹ: 10,
+};
+
+const KNOWN_TRAILING_NUMBER_TITLES =
+  /(?:ゴルゴ13|エリア88|銀河鉄道999|鉄人28号|サイボーグ009|steins;?\s*gate\s*0|zero\s*1)$/i;
+
 export function parseMangaTitleAndVolume(rawTitle: string): ParsedMangaTitle {
   const half = toHalfWidth(rawTitle);
   const isSpecialEdition = /(特装版|限定版|同梱版|小冊子付き|特装)/.test(half);
+  const mediaType = detectMediaType({ rawTitle: half });
 
   const cleanedWorking = half
-    .replace(/^(?:【(?:コミック|漫画|電子書籍|電子版)】|\[\s*コミック\s*\])\s*/g, '')
-    .replace(/\s*[（(][^）)]*(?:コミックス|comics|comic|文庫|新書|digital|デジタル|電子)[^）)]*[）)]\s*$/gi, '')
-    .replace(/[【\[（(]?(特装版|限定版|同梱版|小冊子付き版?|通常版)[】\]）)]?/g, '')
-    .replace(/\s*(?:モノクロ版|カラー版|デジタル版|合本版|愛蔵版|新装版|完全版)\s*/g, ' ')
+    .replace(
+      /^(?:【(?:コミック|漫画|電子書籍|電子版|小説|ラノベ|期間限定[^】]*)】|\[\s*(?:コミック|小説)\s*\])\s*/g,
+      ''
+    )
+    .replace(
+      /\s*[【\[（(][^】\]）)]*(?:コミックス|コミック|comics|comic|漫画版?|小説版?|ラノベ|ノベル|文庫|新書|単行本|digital|デジタル|電子限定[^】\]）)]*|電子書籍|電子|期間限定[^】\]）)]*|特典付き[^】\]）)]*)[】\]）)]\s*$/gi,
+      ''
+    )
+    .replace(
+      /[【\[（(]?(特装版|限定版|同梱版|小冊子付き版?|通常版)[】\]）)]?/g,
+      ''
+    )
+    .replace(
+      /\s*(?:モノクロ版|カラー版|デジタル版|合本版|愛蔵版|新装版|完全版)\s*/g,
+      ' '
+    )
     .replace(/\s+/g, ' ')
     .trim();
 
   const extractVolAndTitle = (
-    input: string
+    input: string,
+    allowGluedDigits: boolean
   ): { title: string; volume: number | null } => {
-    // 末尾の (15) や （15）
-    let m = input.match(/^(.*?)\s*[(\[（]\s*(\d{1,3})\s*[)\]）]$/);
-    if (m && m[1].trim()) return { title: m[1].trim(), volume: Number(m[2]) };
+    // 末尾の丸数字 ①..⑳
+    let m = input.match(/^(.*?)\s*([\u2460-\u2473])$/);
+    if (m && m[1].trim()) {
+      const vol = m[2].charCodeAt(0) - CIRCLED_NUM_OFFSET + 1;
+      return { title: m[1].trim(), volume: vol };
+    }
 
-    // 末尾の 第15巻 / 15巻 / VOL.15 / #15 / 巻15
+    // 末尾のローマ数字 Ⅰ..Ⅹ
+    m = input.match(/^(.*?)\s*([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ])$/);
+    if (m && m[1].trim() && ROMAN_MAP[m[2]]) {
+      return { title: m[1].trim(), volume: ROMAN_MAP[m[2]] };
+    }
+
+    // 末尾の (15) や （15） や [15]
+    m = input.match(/^(.*?)\s*[(\[（【]\s*(\d{1,3})\s*[)\]）】]$/);
+    if (m && m[1].trim() && Number(m[2]) >= 1 && Number(m[2]) <= 200) {
+      return { title: m[1].trim(), volume: Number(m[2]) };
+    }
+
+    // 末尾の 第15巻 / 15巻 / VOL.15 / No.15 / #15 / 巻15
     m = input.match(
-      /^(.*?)\s*(?:第\s*(\d{1,3})\s*巻|(\d{1,3})\s*巻|巻\s*(\d{1,3})|(?:vol\.?|#)\s*(\d{1,3}))$/i
+      /^(.*?)\s*(?:第\s*(\d{1,3})\s*巻|(\d{1,3})\s*巻|巻\s*(\d{1,3})|(?:vol\.?|no\.?|#)\s*(\d{1,3}))$/i
     );
     if (m && m[1].trim()) {
-      return {
-        title: m[1].trim(),
-        volume: Number(m[2] || m[3] || m[4] || m[5]),
-      };
+      const vol = Number(m[2] || m[3] || m[4] || m[5]);
+      if (vol >= 1 && vol <= 200) {
+        return { title: m[1].trim(), volume: vol };
+      }
     }
 
     // 巻数の後ろにサブタイトルが続くケース (例: "作品名 15 副題")
-    m = input.match(/^(.*?)\s+(?:第\s*)?(\d{1,3})(?:\s*巻)?\s+[^\d\s].*$/);
-    if (m && m[1].trim() && Number(m[2]) <= 200) {
+    m = input.match(
+      /^(.*?)\s+(?:第\s*)?(\d{1,3})(?:\s*巻)?(?:\s*[:：\-―～~]\s*|\s+)[^\d\s].*$/
+    );
+    if (m && m[1].trim() && Number(m[2]) >= 1 && Number(m[2]) <= 200) {
       return { title: m[1].trim(), volume: Number(m[2]) };
     }
 
     // 末尾数字 (例: "SPY×FAMILY 18", "ダンダダン 25")
     m = input.match(/^(.*?)\s+(\d{1,3})$/);
-    if (m && m[1].trim() && Number(m[2]) <= 200) {
+    if (m && m[1].trim() && Number(m[2]) >= 1 && Number(m[2]) <= 200) {
       return { title: m[1].trim(), volume: Number(m[2]) };
+    }
+
+    // スペース無し末尾数字 (例: "〇〇1", "〇〇2", "呪術廻戦12")
+    if (allowGluedDigits && !KNOWN_TRAILING_NUMBER_TITLES.test(input)) {
+      m = input.match(/^(.*[^\d.\-/:：+号×xX\s])([1-9]\d{0,2})$/);
+      if (m && m[1].trim().length >= 2) {
+        const vol = Number(m[2]);
+        if (vol >= 1 && vol <= 150) {
+          return { title: m[1].trim(), volume: vol };
+        }
+      }
     }
 
     return { title: input.trim(), volume: null };
   };
 
-  const firstPass = extractVolAndTitle(cleanedWorking);
+  const firstPass = extractVolAndTitle(cleanedWorking, true);
   const jpOnly = stripParallelTitle(firstPass.title);
-  const secondPass = extractVolAndTitle(jpOnly);
+  const secondPass =
+    firstPass.volume !== null
+      ? { title: jpOnly, volume: firstPass.volume }
+      : extractVolAndTitle(jpOnly, true);
 
   return {
     seriesTitle: stripParallelTitle(secondPass.title) || jpOnly || half,
     volumeNumber: secondPass.volume ?? firstPass.volume ?? 1,
     isSpecialEdition,
+    mediaType,
   };
+}
+
+function stripMediaTagForCompare(title: string): string {
+  return toHalfWidth(title)
+    .replace(
+      /\s*[（(【\[]?(?:小説版|漫画版|コミック版|ラノベ版|小説|コミック|漫画)[）)】\]]?\s*$/gi,
+      ''
+    )
+    .trim();
+}
+
+export function getSeriesIdentityKey(title: string): string {
+  const withoutTag = stripMediaTagForCompare(title);
+  const parsed = parseMangaTitleAndVolume(withoutTag);
+  const clean = stripParallelTitle(parsed.seriesTitle || withoutTag);
+  return normalizeSeriesTitle(clean);
+}
+
+function stripTrailingNumericTokens(norm: string): string {
+  if (KNOWN_TRAILING_NUMBER_TITLES.test(norm)) return norm;
+  const m = norm.match(/^(.*?)([1-9]\d{0,2})$/);
+  if (m && m[1].length >= 2) return m[1];
+  return norm;
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  const curr = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+const DISTINCT_WORK_MARKER_RE =
+  /(外伝|スピンオフ|アンソロジー|ファンブック|ガイド|after|before|episode|season|2期|3期|part2)/i;
+
+export function areSeriesSameWork(
+  a: { title: string; mediaType?: MangaMediaType; publisher?: string },
+  b: { title: string; mediaType?: MangaMediaType; publisher?: string }
+): boolean {
+  const mediaA =
+    a.mediaType || detectMediaType({ rawTitle: a.title, publisher: a.publisher });
+  const mediaB =
+    b.mediaType || detectMediaType({ rawTitle: b.title, publisher: b.publisher });
+  if (mediaA !== mediaB) return false;
+
+  const keyA = getSeriesIdentityKey(a.title);
+  const keyB = getSeriesIdentityKey(b.title);
+  if (!keyA || !keyB) return false;
+  if (keyA === keyB) return true;
+
+  if (DISTINCT_WORK_MARKER_RE.test(keyA) !== DISTINCT_WORK_MARKER_RE.test(keyB)) {
+    return false;
+  }
+
+  const baseA = stripTrailingNumericTokens(keyA);
+  const baseB = stripTrailingNumericTokens(keyB);
+  if (baseA === baseB && baseA.length >= 2) return true;
+
+  const noDigitsA = keyA.replace(/\d+/g, '');
+  const noDigitsB = keyB.replace(/\d+/g, '');
+  if (
+    noDigitsA === noDigitsB &&
+    noDigitsA.length >= 3 &&
+    /\d/.test(keyA) &&
+    /\d/.test(keyB)
+  ) {
+    return true;
+  }
+
+  const minLen = Math.min(keyA.length, keyB.length);
+  const maxLen = Math.max(keyA.length, keyB.length);
+  if (minLen >= 4 && Math.abs(keyA.length - keyB.length) <= 2) {
+    const dist = levenshteinDistance(keyA, keyB);
+    if (minLen >= 6 && dist <= 1) return true;
+    if (maxLen >= 10 && dist / maxLen <= 0.16) return true;
+  }
+
+  const minBase = Math.min(baseA.length, baseB.length);
+  if (minBase >= 6 && Math.abs(baseA.length - baseB.length) <= 1) {
+    if (levenshteinDistance(baseA, baseB) <= 1) return true;
+  }
+
+  return false;
+}
+
+export function findMatchingExistingSeries(
+  seriesList: Series[],
+  candidate: {
+    id?: string;
+    title: string;
+    mediaType?: MangaMediaType;
+    publisher?: string;
+  }
+): Series | undefined {
+  const candidateMedia =
+    candidate.mediaType ||
+    detectMediaType({
+      rawTitle: candidate.title,
+      publisher: candidate.publisher,
+    });
+
+  if (candidate.id) {
+    const byId = seriesList.find((s) => s.id === candidate.id);
+    if (byId) {
+      const existingMedia =
+        byId.media_type ||
+        detectMediaType({ rawTitle: byId.title, publisher: byId.publisher });
+      if (existingMedia === candidateMedia) return byId;
+    }
+  }
+
+  const candidateKey = getSeriesIdentityKey(candidate.title);
+  const exact = seriesList.find((s) => {
+    const existingMedia =
+      s.media_type ||
+      detectMediaType({ rawTitle: s.title, publisher: s.publisher });
+    return existingMedia === candidateMedia && getSeriesIdentityKey(s.title) === candidateKey;
+  });
+  if (exact) return exact;
+
+  return seriesList.find((s) =>
+    areSeriesSameWork(
+      {
+        title: s.title,
+        mediaType:
+          s.media_type ||
+          detectMediaType({ rawTitle: s.title, publisher: s.publisher }),
+        publisher: s.publisher,
+      },
+      {
+        title: candidate.title,
+        mediaType: candidateMedia,
+        publisher: candidate.publisher,
+      }
+    )
+  );
 }
 
 function formatOpenBdDate(raw?: string): string {
@@ -257,10 +535,16 @@ function parseOpenBdEntry(item: OpenBdItem, isbnFallback: string): FetchedBookIn
   const parsed = parseMangaTitleAndVolume(s.title);
   const explicitVol = parseExplicitVolumeString(s.volume);
   const volumeNumber = explicitVol ?? parsed.volumeNumber;
-  const seriesTitle =
+  const rawSeries =
     stripParallelTitle(parsed.seriesTitle || s.series || s.title) || parsed.seriesTitle;
   const author = (s.author || '著者情報なし').replace(/／.*$/, '').trim();
   const publisher = s.publisher || '出版社不明';
+  const mediaType = detectMediaType({
+    rawTitle: s.title,
+    seriesTitle: rawSeries,
+    publisher,
+  });
+  const seriesTitle = formatSeriesTitleWithMedia(rawSeries, mediaType);
   const isbn = s.isbn || isbnFallback;
   const coverUrl =
     s.cover && s.cover.startsWith('http')
@@ -277,6 +561,7 @@ function parseOpenBdEntry(item: OpenBdItem, isbnFallback: string): FetchedBookIn
     coverUrl,
     salesDate: formatOpenBdDate(s.pubdate),
     isSpecialEdition: parsed.isSpecialEdition,
+    mediaType,
     source: 'openbd',
   };
 }
@@ -297,22 +582,30 @@ function parseRakutenItem(entry: RakutenBookItem): FetchedBookInfo | null {
   const it = entry?.Item;
   if (!it || !it.title) return null;
   const parsed = parseMangaTitleAndVolume(it.title);
+  const publisher = it.publisherName || '出版社不明';
+  const mediaType = detectMediaType({
+    rawTitle: it.title,
+    seriesTitle: parsed.seriesTitle,
+    publisher,
+  });
+  const seriesTitle = formatSeriesTitleWithMedia(parsed.seriesTitle, mediaType);
   const author = it.author || '著者情報なし';
   const coverUrl =
     it.largeImageUrl ||
     it.mediumImageUrl ||
-    generatePastelCover(parsed.seriesTitle, parsed.volumeNumber, author);
+    generatePastelCover(seriesTitle, parsed.volumeNumber, author);
 
   return {
     isbn: it.isbn || '',
-    fullTitle: `${parsed.seriesTitle} ${parsed.volumeNumber}巻`,
-    seriesTitle: parsed.seriesTitle,
+    fullTitle: `${seriesTitle} ${parsed.volumeNumber}巻`,
+    seriesTitle,
     volumeNumber: parsed.volumeNumber,
     author,
-    publisher: it.publisherName || '出版社不明',
+    publisher,
     coverUrl,
     salesDate: formatRakutenDate(it.salesDate),
     isSpecialEdition: parsed.isSpecialEdition,
+    mediaType,
     source: 'rakuten',
   };
 }
@@ -377,6 +670,7 @@ interface RawVolumeContribution {
   coverUrl: string;
   salesDate: string;
   source: 'ndl' | 'itunes' | 'rakuten' | 'openbd';
+  mediaType: MangaMediaType;
   hasRealCover: boolean;
   hasRealIsbn: boolean;
 }
@@ -386,6 +680,8 @@ interface ItunesEbookItem {
   artistName?: string;
   releaseDate?: string;
   artworkUrl100?: string;
+  genres?: string[];
+  description?: string;
 }
 
 async function fetchItunesContributions(
@@ -409,6 +705,12 @@ async function fetchItunesContributions(
       if (!parsed.seriesTitle || parsed.volumeNumber < 1 || parsed.volumeNumber > 200) {
         continue;
       }
+      const mediaType = detectMediaType({
+        rawTitle,
+        seriesTitle: parsed.seriesTitle,
+        publisher: '',
+        genres: item.genres,
+      });
       const coverUrl = item.artworkUrl100
         ? item.artworkUrl100.replace(/\/\d+x\d+bb\./, '/400x400bb.')
         : '';
@@ -421,6 +723,7 @@ async function fetchItunesContributions(
         coverUrl,
         salesDate: item.releaseDate ? item.releaseDate.slice(0, 10) : '',
         source: 'itunes',
+        mediaType,
         hasRealCover: Boolean(coverUrl),
         hasRealIsbn: false,
       });
@@ -478,6 +781,7 @@ async function fetchRakutenContributions(
         coverUrl: hasRealCover ? parsed.coverUrl : '',
         salesDate: parsed.salesDate,
         source: 'rakuten',
+        mediaType: parsed.mediaType || 'comic',
         hasRealCover,
         hasRealIsbn: Boolean(parsed.isbn),
       });
@@ -508,6 +812,8 @@ export async function searchSeriesByKeyword(
     string,
     {
       title: string;
+      baseKey: string;
+      mediaType: MangaMediaType;
       author: string;
       publisher: string;
       source: 'ndl' | 'itunes' | 'rakuten' | 'openbd';
@@ -518,14 +824,40 @@ export async function searchSeriesByKeyword(
   >();
 
   for (const item of allContributions) {
-    const cleanTitle = stripParallelTitle(item.seriesTitle) || item.seriesTitle;
-    const key = normalizeSeriesTitle(cleanTitle);
-    if (!key) continue;
+    const rawClean = stripParallelTitle(item.seriesTitle) || item.seriesTitle;
+    const cleanTitle = stripMediaTagForCompare(rawClean) || rawClean;
+    const baseKey = getSeriesIdentityKey(cleanTitle);
+    if (!baseKey) continue;
 
-    let group = grouped.get(key);
+    const exactGroupKey = `${item.mediaType}:${baseKey}`;
+    let matchedKey = grouped.has(exactGroupKey) ? exactGroupKey : '';
+    let group = matchedKey ? grouped.get(matchedKey) : undefined;
+
     if (!group) {
+      for (const [existingKey, existingGroup] of grouped.entries()) {
+        if (
+          areSeriesSameWork(
+            { title: cleanTitle, mediaType: item.mediaType, publisher: item.publisher },
+            {
+              title: existingGroup.title,
+              mediaType: existingGroup.mediaType,
+              publisher: existingGroup.publisher,
+            }
+          )
+        ) {
+          matchedKey = existingKey;
+          group = existingGroup;
+          break;
+        }
+      }
+    }
+
+    if (!group) {
+      matchedKey = exactGroupKey;
       group = {
         title: cleanTitle,
+        baseKey,
+        mediaType: item.mediaType,
         author: item.author,
         publisher: item.publisher,
         source: item.source,
@@ -533,7 +865,7 @@ export async function searchSeriesByKeyword(
         hasNdlOrRakuten: item.source === 'ndl' || item.source === 'rakuten',
         maxVol: item.volumeNumber,
       };
-      grouped.set(key, group);
+      grouped.set(matchedKey, group);
     } else {
       if (item.source === 'ndl' || item.source === 'rakuten') {
         group.hasNdlOrRakuten = true;
@@ -563,12 +895,13 @@ export async function searchSeriesByKeyword(
       group.maxVol = item.volumeNumber;
     }
 
+    const displayTitle = formatSeriesTitleWithMedia(group.title, group.mediaType);
     const existingVol = group.volumeMap.get(item.volumeNumber);
     if (!existingVol) {
       group.volumeMap.set(item.volumeNumber, {
         volumeNumber: item.volumeNumber,
-        isbn: item.isbn || buildSyntheticIsbn(key, item.volumeNumber),
-        title: `${group.title} ${item.volumeNumber}巻`,
+        isbn: item.isbn || buildSyntheticIsbn(matchedKey, item.volumeNumber),
+        title: `${displayTitle} ${item.volumeNumber}巻`,
         coverUrl: item.coverUrl,
         salesDate: item.salesDate || new Date().toISOString().slice(0, 10),
         hasRealCover: item.hasRealCover,
@@ -589,13 +922,17 @@ export async function searchSeriesByKeyword(
     }
   }
 
-  const normQuery = normalizeSeriesTitle(q);
+  const queryWantsNovel = /小説|ラノベ|ノベル/i.test(q);
+  const normQuery = getSeriesIdentityKey(q) || normalizeSeriesTitle(q);
   const scored = Array.from(grouped.entries()).map(([key, g]) => {
+    const k = g.baseKey;
     let score = Math.min(g.maxVol, 120) * 6 + Math.min(g.volumeMap.size, 120) * 3;
-    if (key === normQuery) score += 1000;
-    else if (key.startsWith(normQuery) || normQuery.startsWith(key)) score += 450;
-    else if (key.includes(normQuery) || normQuery.includes(key)) score += 200;
+    if (k === normQuery) score += 1000;
+    else if (k.startsWith(normQuery) || normQuery.startsWith(k)) score += 450;
+    else if (k.includes(normQuery) || normQuery.includes(k)) score += 200;
     if (g.hasNdlOrRakuten) score += 120;
+    if (queryWantsNovel && g.mediaType === 'novel') score += 200;
+    else if (!queryWantsNovel && g.mediaType === 'comic') score += 40;
     if (byAuthor && normalizeSeriesTitle(g.author).includes(normQuery)) score += 500;
     score -= g.title.length * 0.4;
     return { key, g, score };
@@ -641,6 +978,7 @@ export async function searchSeriesByKeyword(
   return topGroups.map(({ key, g }, idx) => {
     const accent = palette[idx % palette.length];
     const total = Math.max(1, g.maxVol);
+    const displayTitle = formatSeriesTitleWithMedia(g.title, g.mediaType);
     const repCover =
       Array.from(g.volumeMap.values()).find((v) => v.hasRealCover)?.coverUrl || '';
 
@@ -651,23 +989,24 @@ export async function searchSeriesByKeyword(
       const cover =
         existing?.coverUrl ||
         repCover ||
-        generatePastelCover(g.title, v, g.author, accent);
+        generatePastelCover(displayTitle, v, g.author, accent);
       fullVolumes.push({
         volumeNumber: v,
         isbn: existing?.isbn || buildSyntheticIsbn(key, v),
-        title: `${g.title} ${v}巻`,
+        title: `${displayTitle} ${v}巻`,
         coverUrl: cover,
         salesDate: existing?.salesDate || new Date().toISOString().slice(0, 10),
       });
     }
 
     return {
-      id: `${g.source}-${key}`,
-      title: g.title,
+      id: `${g.source}-${g.mediaType}-${g.baseKey}`,
+      title: displayTitle,
       author: g.author,
       publisher: g.publisher,
       total_published: total,
       status: 'reading',
+      media_type: g.mediaType,
       accent_color: accent,
       source: g.source,
       volumes: fullVolumes,
@@ -758,6 +1097,7 @@ export interface ResolvedSeriesExtent {
   volumes?: OpenBdVolumeMeta[];
   canonicalSeriesId?: string;
   canonicalTitle?: string;
+  mediaType?: MangaMediaType;
 }
 
 export async function resolveSeriesPublishedVolumes(options: {
@@ -765,12 +1105,15 @@ export async function resolveSeriesPublishedVolumes(options: {
   isbn?: string;
   volumeNumber: number;
   rakutenAppId?: string;
+  mediaType?: MangaMediaType;
 }): Promise<ResolvedSeriesExtent> {
-  const { seriesTitle, isbn, volumeNumber, rakutenAppId } = options;
-  const normTarget = normalizeSeriesTitle(seriesTitle);
+  const { seriesTitle, isbn, volumeNumber, rakutenAppId, mediaType } = options;
+  const targetMedia = mediaType || detectMediaType({ rawTitle: seriesTitle });
+  const normTarget = getSeriesIdentityKey(seriesTitle);
 
   // 1. プリセット照合（最新刊までマルチソース取得）
   const matchedPreset = OPENBD_REAL_SERIES_PRESETS.find((preset) => {
+    if (targetMedia === 'novel') return false;
     if (isbn && preset.isbns.includes(isbn)) return true;
     const normLabel = normalizeSeriesTitle(preset.label);
     return (
@@ -788,6 +1131,7 @@ export async function resolveSeriesPublishedVolumes(options: {
           volumes: fetchedSeries.volumes,
           canonicalSeriesId: fetchedSeries.id,
           canonicalTitle: fetchedSeries.title,
+          mediaType: 'comic',
         };
       }
     } catch {
@@ -795,6 +1139,7 @@ export async function resolveSeriesPublishedVolumes(options: {
         totalPublished: Math.max(matchedPreset.isbns.length, volumeNumber),
         canonicalSeriesId: `openbd-${matchedPreset.key}`,
         canonicalTitle: matchedPreset.label,
+        mediaType: 'comic',
       };
     }
   }
@@ -802,15 +1147,30 @@ export async function resolveSeriesPublishedVolumes(options: {
   // 2. NDLサーチ / iTunes / 楽天API（設定時）で全巻数・各巻書影をリアルタイム確認
   if (seriesTitle.trim().length >= 2) {
     try {
-      const seriesList = await searchSeriesByKeyword(seriesTitle, rakutenAppId);
+      const searchTerm =
+        targetMedia === 'novel' && !/小説|ラノベ|ノベル/i.test(seriesTitle)
+          ? `${stripMediaTagForCompare(seriesTitle)} 小説`
+          : stripMediaTagForCompare(seriesTitle);
+      const seriesList = await searchSeriesByKeyword(searchTerm, rakutenAppId);
       const exact =
-        seriesList.find((r) => normalizeSeriesTitle(r.title) === normTarget) ||
+        seriesList.find((r) =>
+          areSeriesSameWork(
+            {
+              title: r.title,
+              mediaType: r.media_type || 'comic',
+              publisher: r.publisher,
+            },
+            { title: seriesTitle, mediaType: targetMedia }
+          )
+        ) ||
+        seriesList.find((r) => (r.media_type || 'comic') === targetMedia) ||
         seriesList[0];
       if (exact && exact.total_published > 0) {
         return {
           totalPublished: Math.max(exact.total_published, volumeNumber),
           volumes: exact.volumes,
           canonicalTitle: exact.title,
+          mediaType: exact.media_type || targetMedia,
         };
       }
     } catch {
@@ -820,7 +1180,8 @@ export async function resolveSeriesPublishedVolumes(options: {
 
   // 3. 内蔵カタログから既刊数を確認
   const matchedCatalog = CATALOG_SERIES.find((c) => {
-    const normCat = normalizeSeriesTitle(c.title);
+    if ((c.media_type || 'comic') !== targetMedia) return false;
+    const normCat = getSeriesIdentityKey(c.title);
     return (
       normTarget.length >= 2 &&
       (normCat.includes(normTarget) || normTarget.includes(normCat))
@@ -831,8 +1192,9 @@ export async function resolveSeriesPublishedVolumes(options: {
       totalPublished: Math.max(matchedCatalog.total_published, volumeNumber),
       canonicalSeriesId: matchedCatalog.id,
       canonicalTitle: matchedCatalog.title,
+      mediaType: matchedCatalog.media_type || 'comic',
     };
   }
 
-  return { totalPublished: volumeNumber };
+  return { totalPublished: volumeNumber, mediaType: targetMedia };
 }
